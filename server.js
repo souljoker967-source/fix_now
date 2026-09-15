@@ -11,11 +11,11 @@ app.use(express.json());
 
 // MySQL connection
 const db = mysql.createConnection({
-    host: process.env.MYSQLHOST || "localhost",
-    port: process.env.MYSQLPORT || 3306,
-    user: process.env.MYSQLUSER || "root",
-    password: process.env.MYSQLPASSWORD || process.env.MYSQL_PASSWORD,
-    database: process.env.MYSQLDATABASE || "fix_now"
+    host: process.env.MYSQL_HOST || process.env.MYSQLHOST || "localhost",
+    port: process.env.MYSQL_PORT || process.env.MYSQLPORT || 3306,
+    user: process.env.MYSQL_USER || process.env.MYSQLUSER || "root",
+    password: process.env.MYSQL_PASSWORD || process.env.MYSQL_ROOT_PASSWORD || process.env.MYSQLPASSWORD || "",
+    database: process.env.MYSQL_DATABASE || process.env.MYSQLDATABASE || "fix_now"
 });
 
 db.connect((err) => {
