@@ -121,6 +121,139 @@ app.post("/providers", (req, res) => {
         }
     );
 });
+// Register a customer or service provider account
+app.post("/register", async (req, res) => {
+    const { name, email, phone, password, account_type } = req.body;
+
+    if (!name || !email || !phone || !password) {
+        return res.status(400).json({
+            message: "Please fill in all required fields."
+        });
+    }
+
+    const type = account_type || "customer";
+
+    if (!["customer", "provider"].includes(type)) {
+        return res.status(400).json({
+            message: "Invalid account type."
+        });
+    }
+
+    if (String(password).length < 8) {
+        return res.status(400).json({
+            message: "Password must be at least 8 characters."
+        });
+    }
+
+    try {
+        const hashedPassword = await require("bcryptjs").hash(password, 10);
+
+        const sql = `
+            INSERT INTO users (name, email, phone, password, account_type)
+            VALUES (?, ?, ?, ?, ?)
+        `;
+
+        db.query(
+            sql,
+            [
+                String(name).trim(),
+                String(email).trim().toLowerCase(),
+                String(phone).trim(),
+                hashedPassword,
+                type
+            ],
+            (err, result) => {
+                if (err) {
+                    if (err.code === "ER_DUP_ENTRY") {
+                        return res.status(409).json({
+                            message: "That email or phone number is already registered."
+                        });
+                    }
+
+                    console.error("Registration failed:", err.message);
+                    return res.status(500).json({
+                        message: "Unable to create account."
+                    });
+                }
+
+                return res.status(201).json({
+                    message: "Account created successfully!",
+                    user: {
+                        id: result.insertId,
+                        name: String(name).trim(),
+                        email: String(email).trim().toLowerCase(),
+                        account_type: type
+                    }
+                });
+            }
+        );
+    } catch (err) {
+        console.error("Password hashing failed:", err.message);
+        return res.status(500).json({
+            message: "Unable to create account."
+        });
+    }
+});
+
+// Log in to an existing account
+app.post("/login", (req, res) => {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+        return res.status(400).json({
+            message: "Email and password are required."
+        });
+    }
+
+    db.query(
+        "SELECT id, name, email, phone, password, account_type FROM users WHERE email = ? LIMIT 1",
+        [String(email).trim().toLowerCase()],
+        async (err, results) => {
+            if (err) {
+                console.error("Login failed:", err.message);
+                return res.status(500).json({
+                    message: "Unable to log in."
+                });
+            }
+
+            if (results.length === 0) {
+                return res.status(401).json({
+                    message: "Invalid email or password."
+                });
+            }
+
+            try {
+                const user = results[0];
+                const validPassword = await require("bcryptjs").compare(
+                    password,
+                    user.password
+                );
+
+                if (!validPassword) {
+                    return res.status(401).json({
+                        message: "Invalid email or password."
+                    });
+                }
+
+                return res.json({
+                    message: "Login successful!",
+                    user: {
+                        id: user.id,
+                        name: user.name,
+                        email: user.email,
+                        phone: user.phone,
+                        account_type: user.account_type
+                    }
+                });
+            } catch (compareError) {
+                console.error("Password verification failed:", compareError.message);
+                return res.status(500).json({
+                    message: "Unable to log in."
+                });
+            }
+        }
+    );
+});
 // Start server
 const PORT = process.env.PORT || 5000;
 
