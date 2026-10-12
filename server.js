@@ -1,9 +1,9 @@
-
 require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
 const mysql = require("mysql2");
+const bcrypt = require("bcryptjs");
 
 const app = express();
 
@@ -26,7 +26,6 @@ const db = mysql.createConnection({
         "fix_now"
 });
 
-// Connect to MySQL
 db.connect((err) => {
     if (err) {
         console.error("MySQL connection failed:", err.message);
@@ -36,19 +35,14 @@ db.connect((err) => {
     console.log("MySQL connected successfully!");
 });
 
-// Health-check route
+// Health check
 app.get("/", (req, res) => {
-    res.json({
-        message: "Fix Now backend is running!"
-    });
+    res.json({ message: "Fix Now backend is running!" });
 });
 
-// Search service providers
-// Example: GET /providers/search?service=Plumber
-// Optional: GET /providers/search?service=Plumber&location=Chennai
+// Search providers
 app.get("/providers/search", (req, res) => {
-    const service = req.query.service;
-    const location = req.query.location;
+    const { service, location } = req.query;
 
     if (typeof service !== "string" || !service.trim()) {
         return res.status(400).json({
@@ -74,9 +68,8 @@ app.get("/providers/search", (req, res) => {
     db.query(sql, params, (err, results) => {
         if (err) {
             console.error("Provider search failed:", err.message);
-
             return res.status(500).json({
-                message: "Unable to search providers. Please try again."
+                message: "Unable to search providers."
             });
         }
 
@@ -87,41 +80,118 @@ app.get("/providers/search", (req, res) => {
     });
 });
 
-// Register a new service provider
+// Register or update a provider profile linked to a login account
 app.post("/providers", (req, res) => {
-    const { name, phone, service_type, location } = req.body;
+    const { user_id, name, phone, service_type, location } = req.body;
 
-    if (!name || !phone || !service_type || !location) {
+    if (
+        !Number.isInteger(Number(user_id)) ||
+        Number(user_id) <= 0 ||
+        !name?.trim() ||
+        !phone?.trim() ||
+        !service_type?.trim() ||
+        !location?.trim()
+    ) {
         return res.status(400).json({
             message: "Please fill in all provider details."
         });
     }
 
-    const sql = `
-        INSERT INTO providers (name, phone, service_type, location)
-        VALUES (?, ?, ?, ?)
-    `;
-
     db.query(
-        sql,
-        [name.trim(), phone.trim(), service_type.trim(), location.trim()],
-        (err, result) => {
+        "SELECT id FROM users WHERE id = ? AND account_type = 'provider' LIMIT 1",
+        [Number(user_id)],
+        (err, users) => {
             if (err) {
-                console.error("Provider registration failed:", err.message);
-
+                console.error("Provider account lookup failed:", err.message);
                 return res.status(500).json({
-                    message: "Unable to register provider."
+                    message: "Unable to verify provider account."
                 });
             }
 
-            return res.status(201).json({
-                message: "Provider registered successfully!",
-                providerId: result.insertId
-            });
+            if (!users.length) {
+                return res.status(400).json({
+                    message: "Provider account not found."
+                });
+            }
+
+            const sql = `
+                INSERT INTO providers
+                    (user_id, name, phone, service_type, location)
+                VALUES (?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    name = VALUES(name),
+                    phone = VALUES(phone),
+                    service_type = VALUES(service_type),
+                    location = VALUES(location)
+            `;
+
+            db.query(
+                sql,
+                [
+                    Number(user_id),
+                    name.trim(),
+                    phone.trim(),
+                    service_type.trim(),
+                    location.trim()
+                ],
+                (saveErr) => {
+                    if (saveErr) {
+                        console.error("Provider profile save failed:", saveErr.message);
+                        return res.status(500).json({
+                            message: "Unable to save provider profile."
+                        });
+                    }
+
+                    db.query(
+                        "SELECT id FROM providers WHERE user_id = ? LIMIT 1",
+                        [Number(user_id)],
+                        (findErr, rows) => {
+                            if (findErr || !rows.length) {
+                                console.error(
+                                    "Provider profile lookup failed:",
+                                    findErr?.message
+                                );
+                                return res.status(500).json({
+                                    message: "Unable to retrieve provider profile."
+                                });
+                            }
+
+                            return res.json({
+                                message: "Provider profile saved successfully!",
+                                providerId: rows[0].id
+                            });
+                        }
+                    );
+                }
+            );
         }
     );
 });
-// Register a customer or service provider account
+
+// Get a provider profile by login user ID
+app.get("/providers/by-user/:userId", (req, res) => {
+    db.query(
+        `SELECT id, user_id, name, phone, service_type, location
+         FROM providers WHERE user_id = ? LIMIT 1`,
+        [req.params.userId],
+        (err, rows) => {
+            if (err) {
+                console.error("Provider profile lookup failed:", err.message);
+                return res.status(500).json({
+                    message: "Unable to retrieve provider profile."
+                });
+            }
+
+            if (!rows.length) {
+                return res.json({ provider: null });
+            }
+
+            return res.json({ provider: rows[0] });
+        }
+    );
+});
+
+// Register customer or provider account
 app.post("/register", async (req, res) => {
     const { name, email, phone, password, account_type } = req.body;
 
@@ -146,7 +216,7 @@ app.post("/register", async (req, res) => {
     }
 
     try {
-        const hashedPassword = await require("bcryptjs").hash(password, 10);
+        const hashedPassword = await bcrypt.hash(String(password), 10);
 
         const sql = `
             INSERT INTO users (name, email, phone, password, account_type)
@@ -182,6 +252,7 @@ app.post("/register", async (req, res) => {
                         id: result.insertId,
                         name: String(name).trim(),
                         email: String(email).trim().toLowerCase(),
+                        phone: String(phone).trim(),
                         account_type: type
                     }
                 });
@@ -195,7 +266,7 @@ app.post("/register", async (req, res) => {
     }
 });
 
-// Log in to an existing account
+// Log in
 app.post("/login", (req, res) => {
     const { email, password } = req.body;
 
@@ -206,7 +277,8 @@ app.post("/login", (req, res) => {
     }
 
     db.query(
-        "SELECT id, name, email, phone, password, account_type FROM users WHERE email = ? LIMIT 1",
+        `SELECT id, name, email, phone, password, account_type
+         FROM users WHERE email = ? LIMIT 1`,
         [String(email).trim().toLowerCase()],
         async (err, results) => {
             if (err) {
@@ -216,7 +288,7 @@ app.post("/login", (req, res) => {
                 });
             }
 
-            if (results.length === 0) {
+            if (!results.length) {
                 return res.status(401).json({
                     message: "Invalid email or password."
                 });
@@ -224,8 +296,8 @@ app.post("/login", (req, res) => {
 
             try {
                 const user = results[0];
-                const validPassword = await require("bcryptjs").compare(
-                    password,
+                const validPassword = await bcrypt.compare(
+                    String(password),
                     user.password
                 );
 
@@ -254,13 +326,21 @@ app.post("/login", (req, res) => {
         }
     );
 });
+
 // Create a booking
 app.post("/bookings", (req, res) => {
     const { customer_id, provider_id, problem } = req.body;
+    const customerId = Number(customer_id);
+    const providerId = Number(provider_id);
 
-    if (!customer_id || !provider_id) {
+    if (
+        !Number.isInteger(customerId) ||
+        customerId <= 0 ||
+        !Number.isInteger(providerId) ||
+        providerId <= 0
+    ) {
         return res.status(400).json({
-            message: "Customer ID and provider ID are required."
+            message: "Valid customer and provider IDs are required."
         });
     }
 
@@ -268,14 +348,13 @@ app.post("/bookings", (req, res) => {
         INSERT INTO bookings (customer_id, provider_id, problem, status)
         SELECT u.id, p.id, ?, 'Pending'
         FROM users u
-        CROSS JOIN providers p
-        WHERE u.id = ? AND p.id = ?
-        AND u.account_type = 'customer'
+        JOIN providers p ON p.id = ?
+        WHERE u.id = ? AND u.account_type = 'customer'
     `;
 
     db.query(
         sql,
-        [problem || null, customer_id, provider_id],
+        [problem?.trim() || null, providerId, customerId],
         (err, result) => {
             if (err) {
                 console.error("Booking creation failed:", err.message);
@@ -284,7 +363,7 @@ app.post("/bookings", (req, res) => {
                 });
             }
 
-            if (result.affectedRows === 0) {
+            if (!result.affectedRows) {
                 return res.status(400).json({
                     message: "Customer or provider was not found."
                 });
@@ -294,9 +373,9 @@ app.post("/bookings", (req, res) => {
                 message: "Booking created successfully!",
                 booking: {
                     id: result.insertId,
-                    customer_id,
-                    provider_id,
-                    problem: problem || null,
+                    customer_id: customerId,
+                    provider_id: providerId,
+                    problem: problem?.trim() || null,
                     status: "Pending"
                 }
             });
@@ -304,7 +383,7 @@ app.post("/bookings", (req, res) => {
     );
 });
 
-// Get bookings for a customer
+// Get customer bookings
 app.get("/bookings/customer/:id", (req, res) => {
     const sql = `
         SELECT b.id, b.customer_id, b.provider_id, b.problem,
@@ -329,7 +408,7 @@ app.get("/bookings/customer/:id", (req, res) => {
     });
 });
 
-// Get bookings for a provider (use the providers table ID)
+// Get bookings for the provider's login user ID
 app.get("/bookings/provider/:id", (req, res) => {
     const sql = `
         SELECT b.id, b.customer_id, b.provider_id, b.problem,
@@ -337,7 +416,8 @@ app.get("/bookings/provider/:id", (req, res) => {
                u.name AS customer_name, u.phone AS customer_phone
         FROM bookings b
         JOIN users u ON b.customer_id = u.id
-        WHERE b.provider_id = ?
+        JOIN providers p ON b.provider_id = p.id
+        WHERE p.user_id = ?
         ORDER BY b.created_at DESC
     `;
 
@@ -353,26 +433,48 @@ app.get("/bookings/provider/:id", (req, res) => {
     });
 });
 
-// Update booking status
+// Update a booking status using the actual provider profile ID
 app.patch("/bookings/:id/status", (req, res) => {
     const { status, provider_id } = req.body;
     const allowedStatuses = ["Accepted", "Rejected", "Completed"];
+    const providerId = Number(provider_id);
+    const bookingId = Number(req.params.id);
 
-    if (!allowedStatuses.includes(status) || !provider_id) {
+    if (
+        !allowedStatuses.includes(status) ||
+        !Number.isInteger(providerId) ||
+        providerId <= 0 ||
+        !Number.isInteger(bookingId) ||
+        bookingId <= 0
+    ) {
         return res.status(400).json({
-            message: "A valid status and provider ID are required."
+            message: "Valid booking, provider, and status are required."
         });
     }
 
     const sql = `
-        UPDATE bookings
-        SET status = ?
-        WHERE id = ? AND provider_id = ? AND status = 'Pending'
+        UPDATE bookings b
+        JOIN providers p ON p.id = b.provider_id
+        SET b.status = ?
+        WHERE b.id = ?
+          AND p.id = ?
+          AND b.status = ?
+          AND (
+              (? = 'Completed' AND b.status = 'Accepted')
+              OR (? IN ('Accepted', 'Rejected') AND b.status = 'Pending')
+          )
     `;
 
     db.query(
         sql,
-        [status, req.params.id, provider_id],
+        [
+            status,
+            bookingId,
+            providerId,
+            status === "Completed" ? "Accepted" : "Pending",
+            status,
+            status
+        ],
         (err, result) => {
             if (err) {
                 console.error("Booking status update failed:", err.message);
@@ -381,9 +483,9 @@ app.patch("/bookings/:id/status", (req, res) => {
                 });
             }
 
-            if (result.affectedRows === 0) {
+            if (!result.affectedRows) {
                 return res.status(404).json({
-                    message: "Pending booking not found for this provider."
+                    message: "Booking not found or its status cannot be changed."
                 });
             }
 
@@ -394,6 +496,7 @@ app.patch("/bookings/:id/status", (req, res) => {
         }
     );
 });
+
 // Start server
 const PORT = process.env.PORT || 5000;
 
