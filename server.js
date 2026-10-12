@@ -254,6 +254,146 @@ app.post("/login", (req, res) => {
         }
     );
 });
+// Create a booking
+app.post("/bookings", (req, res) => {
+    const { customer_id, provider_id, problem } = req.body;
+
+    if (!customer_id || !provider_id) {
+        return res.status(400).json({
+            message: "Customer ID and provider ID are required."
+        });
+    }
+
+    const sql = `
+        INSERT INTO bookings (customer_id, provider_id, problem, status)
+        SELECT u.id, p.id, ?, 'Pending'
+        FROM users u
+        CROSS JOIN providers p
+        WHERE u.id = ? AND p.id = ?
+        AND u.account_type = 'customer'
+    `;
+
+    db.query(
+        sql,
+        [problem || null, customer_id, provider_id],
+        (err, result) => {
+            if (err) {
+                console.error("Booking creation failed:", err.message);
+                return res.status(500).json({
+                    message: "Unable to create booking."
+                });
+            }
+
+            if (result.affectedRows === 0) {
+                return res.status(400).json({
+                    message: "Customer or provider was not found."
+                });
+            }
+
+            return res.status(201).json({
+                message: "Booking created successfully!",
+                booking: {
+                    id: result.insertId,
+                    customer_id,
+                    provider_id,
+                    problem: problem || null,
+                    status: "Pending"
+                }
+            });
+        }
+    );
+});
+
+// Get bookings for a customer
+app.get("/bookings/customer/:id", (req, res) => {
+    const sql = `
+        SELECT b.id, b.customer_id, b.provider_id, b.problem,
+               b.status, b.created_at,
+               p.name AS provider_name, p.phone AS provider_phone,
+               p.service_type, p.location
+        FROM bookings b
+        JOIN providers p ON b.provider_id = p.id
+        WHERE b.customer_id = ?
+        ORDER BY b.created_at DESC
+    `;
+
+    db.query(sql, [req.params.id], (err, results) => {
+        if (err) {
+            console.error("Customer bookings failed:", err.message);
+            return res.status(500).json({
+                message: "Unable to retrieve bookings."
+            });
+        }
+
+        return res.json({ bookings: results });
+    });
+});
+
+// Get bookings for a provider (use the providers table ID)
+app.get("/bookings/provider/:id", (req, res) => {
+    const sql = `
+        SELECT b.id, b.customer_id, b.provider_id, b.problem,
+               b.status, b.created_at,
+               u.name AS customer_name, u.phone AS customer_phone
+        FROM bookings b
+        JOIN users u ON b.customer_id = u.id
+        WHERE b.provider_id = ?
+        ORDER BY b.created_at DESC
+    `;
+
+    db.query(sql, [req.params.id], (err, results) => {
+        if (err) {
+            console.error("Provider bookings failed:", err.message);
+            return res.status(500).json({
+                message: "Unable to retrieve bookings."
+            });
+        }
+
+        return res.json({ bookings: results });
+    });
+});
+
+// Update booking status
+app.patch("/bookings/:id/status", (req, res) => {
+    const { status, provider_id } = req.body;
+    const allowedStatuses = ["Accepted", "Rejected", "Completed"];
+
+    if (!allowedStatuses.includes(status) || !provider_id) {
+        return res.status(400).json({
+            message: "A valid status and provider ID are required."
+        });
+    }
+
+    const sql = `
+        UPDATE bookings
+        SET status = ?
+        WHERE id = ? AND provider_id = ? AND status = 'Pending'
+    `;
+
+    db.query(
+        sql,
+        [status, req.params.id, provider_id],
+        (err, result) => {
+            if (err) {
+                console.error("Booking status update failed:", err.message);
+                return res.status(500).json({
+                    message: "Unable to update booking."
+                });
+            }
+
+            if (result.affectedRows === 0) {
+                return res.status(404).json({
+                    message: "Pending booking not found for this provider."
+                });
+            }
+
+            return res.json({
+                message: `Booking ${status.toLowerCase()} successfully.`,
+                status
+            });
+        }
+    );
+});
 // Start server
 const PORT = process.env.PORT || 5000;
 
