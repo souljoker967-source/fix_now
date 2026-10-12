@@ -87,6 +87,40 @@ app.get("/providers/search", (req, res) => {
     });
 });
 
+// Register a new service provider
+app.post("/providers", (req, res) => {
+    const { name, phone, service_type, location } = req.body;
+
+    if (!name || !phone || !service_type || !location) {
+        return res.status(400).json({
+            message: "Please fill in all provider details."
+        });
+    }
+
+    const sql = `
+        INSERT INTO providers (name, phone, service_type, location)
+        VALUES (?, ?, ?, ?)
+    `;
+
+    db.query(
+        sql,
+        [name.trim(), phone.trim(), service_type.trim(), location.trim()],
+        (err, result) => {
+            if (err) {
+                console.error("Provider registration failed:", err.message);
+
+                return res.status(500).json({
+                    message: "Unable to register provider."
+                });
+            }
+
+            return res.status(201).json({
+                message: "Provider registered successfully!",
+                providerId: result.insertId
+            });
+        }
+    );
+});
 // Start server
 const PORT = process.env.PORT || 5000;
 
