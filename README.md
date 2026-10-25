@@ -14,10 +14,11 @@ belong in the Expo app.
 3. In the existing backend host's environment settings, set `MYSQL_HOST`,
    `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, and `MYSQL_DATABASE` from the
    cluster connection details, and set `MYSQL_SSL=true`. Keep these values
-   private. The server waits for a successful database connection before
-   accepting requests. If TiDB provides a CA certificate for the cluster,
-   provide its PEM contents as `MYSQL_SSL_CA`. Allow the backend host's
-   outbound IP addresses in the cluster's network access settings.
+   private. The server enables TLS 1.2 or newer and verifies the certificate
+   using Node.js's default trusted CA certificates. TiDB Cloud Starter normally
+   does not require a custom CA; set `MYSQL_SSL_CA` only if your cluster
+   explicitly requires one. Allow the backend host's outbound IP addresses in
+   the cluster's network access settings.
 4. Set `EXPO_PUBLIC_API_URL` to the public URL of that existing backend. For
    local Expo development, copy `.env.example` to `.env` and update the API URL.
    The API URL is public app configuration; database credentials stay on the
@@ -25,6 +26,9 @@ belong in the Expo app.
 
 The existing Railway API URL remains the default if `EXPO_PUBLIC_API_URL` is
 not set. Start the existing backend locally with `npm run server`.
+To check the database connection using the configured environment variables,
+run `npm run test:db`. It reports the connection result without printing
+configured credentials.
 
 ## Get started
 

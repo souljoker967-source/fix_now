@@ -39,27 +39,72 @@ const db = mysql.createPool({
         verifyIdentity: true,
         ...(mysqlSslCa ? { ca: mysqlSslCa.replace(/\\n/g, "\n") } : {}),
       }
-    : undefined,
+    : null,
   waitForConnections: true,
   connectionLimit: 10,
 });
 
-db.getConnection((err, connection) => {
-  if (err) {
-    console.error("MySQL connection failed:", err.message);
-    db.end(() => {
-      process.exitCode = 1;
-    });
-    return;
+function formatMysqlConnectionError(error) {
+  let message = error.message;
+  const credentials = [
+    process.env.MYSQL_USER,
+    process.env.MYSQLUSER,
+    process.env.MYSQL_PASSWORD,
+    process.env.MYSQL_ROOT_PASSWORD,
+    process.env.MYSQLPASSWORD,
+  ].filter(Boolean);
+
+  for (const credential of credentials) {
+    message = message.split(credential).join("[REDACTED]");
   }
 
-  connection.release();
-  console.log("MySQL connected successfully!");
-  const PORT = process.env.PORT || 5000;
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on port ${PORT}`);
+  return error.code ? `${error.code}: ${message}` : message;
+}
+
+const testConnectionOnly = process.argv.includes("--test-db");
+
+if (testConnectionOnly && mysqlSslSetting !== "true") {
+  console.error("MySQL connection test requires MYSQL_SSL=true.");
+  db.end(() => {
+    process.exitCode = 1;
   });
-});
+} else {
+  db.getConnection((err, connection) => {
+    if (err) {
+      console.error(
+        "MySQL connection failed:",
+        formatMysqlConnectionError(err)
+      );
+      db.end((endError) => {
+        if (endError) {
+          console.error("MySQL pool shutdown failed:", endError.message);
+        }
+        process.exitCode = 1;
+      });
+      return;
+    }
+
+    connection.release();
+    if (testConnectionOnly) {
+      console.log("MySQL connection successful (TLS enabled).");
+      db.end((endError) => {
+        if (endError) {
+          console.error("MySQL pool shutdown failed:", endError.message);
+          process.exitCode = 1;
+        }
+      });
+      return;
+    }
+
+    console.log(
+      `MySQL connected successfully (TLS ${mysqlSslEnabled ? "enabled" : "disabled"}).`
+    );
+    const PORT = process.env.PORT || 5000;
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  });
+}
 
 app.get("/", (req, res) => {
   res.json({ message: "Fix Now backend is running!" });
