@@ -9,17 +9,17 @@ database can use the free TiDB Cloud Starter tier; no database credentials
 belong in the Expo app.
 
 1. Create a TiDB Cloud Starter cluster and a database named `fix_now`.
-2. Run [`schema.sql`](./schema.sql) in the cluster's SQL editor while connected
-   to `fix_now`.
-3. In the existing backend host's environment settings, set `MYSQL_HOST`,
+2. In the existing backend host's environment settings, set `MYSQL_HOST`,
    `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, and `MYSQL_DATABASE` from the
    cluster connection details, and set `MYSQL_SSL=true`. Keep these values
    private. The server enables TLS 1.2 or newer and verifies the certificate
    using Node.js's default trusted CA certificates. TiDB Cloud Starter normally
    does not require a custom CA; set `MYSQL_SSL_CA` only if your cluster
    explicitly requires one. Allow the backend host's outbound IP addresses in
-   the cluster's network access settings.
-4. Generate a private secret (for example,
+   the cluster's network access settings. The backend initializes the existing
+   [`schema.sql`](./schema.sql) definitions at startup using
+   `CREATE TABLE IF NOT EXISTS`; existing tables and rows are not replaced.
+3. Generate a private secret (for example,
    `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`)
    and add it in Render under **Service → Environment** as `AUTH_TOKEN_SECRET`.
    Keep this value stable so existing sessions remain valid. The API returns

@@ -6,6 +6,8 @@ const cors = require("cors");
 const mysql = require("mysql2");
 const bcrypt = require("bcryptjs");
 const crypto = require("node:crypto");
+const fs = require("node:fs/promises");
+const path = require("node:path");
 
 const app = express();
 app.use(cors());
@@ -227,13 +229,47 @@ function formatMysqlConnectionError(error) {
 
 const testConnectionOnly = process.argv.includes("--test-db");
 
-function startServer() {
+async function initializeSchema(execute = (statement) => db.promise().query(statement)) {
+  const schema = await fs.readFile(path.join(__dirname, "schema.sql"), "utf8");
+  const statements = schema
+    .split(";")
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+
+  if (
+    !statements.length ||
+    statements.some(
+      (statement) => !/^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\b/i.test(statement)
+    )
+  ) {
+    throw new Error("schema.sql contains an unsupported initialization statement.");
+  }
+
+  for (const statement of statements) {
+    await execute(statement);
+  }
+}
+
+async function startServer() {
   if (testConnectionOnly && mysqlSslSetting !== "true") {
     console.error("MySQL connection test requires MYSQL_SSL=true.");
     db.end(() => {
       process.exitCode = 1;
     });
     return;
+  }
+
+  if (!testConnectionOnly) {
+    try {
+      await initializeSchema();
+    } catch (error) {
+      const code = getSafeDatabaseCode(error);
+      console.error(`Database schema initialization failed (code=${code}).`);
+      db.end(() => {
+        process.exitCode = 1;
+      });
+      return;
+    }
   }
 
   db.getConnection((err, connection) => {
@@ -931,4 +967,4 @@ app.patch(
   );
 });
 
-module.exports = { app, db, startServer };
+module.exports = { app, db, initializeSchema, startServer };

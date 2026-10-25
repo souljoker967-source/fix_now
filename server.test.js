@@ -4,7 +4,7 @@ const bcrypt = require("bcryptjs");
 
 process.env.AUTH_TOKEN_SECRET = "local-test-secret-with-at-least-32-bytes";
 
-const { app, db } = require("./server");
+const { app, db, initializeSchema } = require("./server");
 const users = new Map();
 const bookings = [];
 let nextUserId = 3;
@@ -174,6 +174,18 @@ after(async () => {
   await new Promise((resolve, reject) =>
     server.close((error) => (error ? reject(error) : resolve()))
   );
+});
+
+test("schema initialization executes only idempotent existing table definitions", async () => {
+  const statements = [];
+  await initializeSchema(async (statement) => statements.push(statement));
+  assert.equal(statements.length, 3);
+  assert.ok(statements.every((statement) => /^CREATE TABLE IF NOT EXISTS/i.test(statement)));
+  assert.match(statements[0], /account_type ENUM\('customer', 'provider'\)/);
+  assert.match(statements[0], /users_email_unique/);
+  assert.match(statements[0], /users_phone_unique/);
+  assert.match(statements[1], /providers_user_id_unique/);
+  assert.match(statements[2], /bookings_customer_created_idx/);
 });
 
 async function request(path, { method = "GET", token, body } = {}) {
