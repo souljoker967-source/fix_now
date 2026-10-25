@@ -2,6 +2,30 @@
 
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
 
+## Connect the app to the existing backend
+
+The app calls the existing Express API in `server.js`. Its MySQL-compatible
+database can use the free TiDB Cloud Starter tier; no database credentials
+belong in the Expo app.
+
+1. Create a TiDB Cloud Starter cluster and a database named `fix_now`.
+2. Run [`schema.sql`](./schema.sql) in the cluster's SQL editor while connected
+   to `fix_now`.
+3. In the existing backend host's environment settings, set `MYSQL_HOST`,
+   `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, and `MYSQL_DATABASE` from the
+   cluster connection details, and set `MYSQL_SSL=true`. Keep these values
+   private. The server waits for a successful database connection before
+   accepting requests. If TiDB provides a CA certificate for the cluster,
+   provide its PEM contents as `MYSQL_SSL_CA`. Allow the backend host's
+   outbound IP addresses in the cluster's network access settings.
+4. Set `EXPO_PUBLIC_API_URL` to the public URL of that existing backend. For
+   local Expo development, copy `.env.example` to `.env` and update the API URL.
+   The API URL is public app configuration; database credentials stay on the
+   backend.
+
+The existing Railway API URL remains the default if `EXPO_PUBLIC_API_URL` is
+not set. Start the existing backend locally with `npm run server`.
+
 ## Get started
 
 1. Install dependencies

@@ -10,8 +10,17 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const db = mysql.createConnection({
-  host: process.env.MYSQL_HOST || process.env.MYSQLHOST || "localhost",
+const mysqlHost =
+  process.env.MYSQL_HOST || process.env.MYSQLHOST || "localhost";
+const mysqlSslSetting = process.env.MYSQL_SSL?.toLowerCase();
+const mysqlSslCa = process.env.MYSQL_SSL_CA;
+const mysqlSslEnabled =
+  mysqlSslSetting === "true" ||
+  (mysqlSslSetting === undefined &&
+    !["localhost", "127.0.0.1"].includes(mysqlHost));
+
+const db = mysql.createPool({
+  host: mysqlHost,
   port: Number(process.env.MYSQL_PORT || process.env.MYSQLPORT || 3306),
   user: process.env.MYSQL_USER || process.env.MYSQLUSER || "root",
   password:
@@ -23,14 +32,33 @@ const db = mysql.createConnection({
     process.env.MYSQL_DATABASE ||
     process.env.MYSQLDATABASE ||
     "fix_now",
+  ssl: mysqlSslEnabled
+    ? {
+        minVersion: "TLSv1.2",
+        rejectUnauthorized: true,
+        verifyIdentity: true,
+        ...(mysqlSslCa ? { ca: mysqlSslCa.replace(/\\n/g, "\n") } : {}),
+      }
+    : undefined,
+  waitForConnections: true,
+  connectionLimit: 10,
 });
 
-db.connect((err) => {
+db.getConnection((err, connection) => {
   if (err) {
     console.error("MySQL connection failed:", err.message);
+    db.end(() => {
+      process.exitCode = 1;
+    });
     return;
   }
+
+  connection.release();
   console.log("MySQL connected successfully!");
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on port ${PORT}`);
+  });
 });
 
 app.get("/", (req, res) => {
@@ -611,9 +639,4 @@ app.patch("/bookings/:id/status", (req, res) => {
       });
     }
   );
-});
-
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running on port ${PORT}`);
 });
