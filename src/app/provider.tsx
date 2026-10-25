@@ -12,9 +12,12 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { useFocusEffect, useLocalSearchParams } from "expo-router";
+import { useFocusEffect } from "expo-router";
+import { SafeAreaView } from "react-native-safe-area-context";
 import * as Location from "expo-location";
 import API from "../api/api";
+import { useSession } from "../auth/session";
+import AppColors from "../constants/app-theme";
 
 type Provider = {
   id: number;
@@ -40,7 +43,8 @@ type Booking = {
 };
 
 export default function ProviderScreen() {
-  const { userId } = useLocalSearchParams<{ userId: string }>();
+  const { user, signOut } = useSession();
+  const userId = user ? String(user.id) : null;
 
   const [profile, setProfile] = useState<Provider | null>(null);
   const [name, setName] = useState("");
@@ -259,21 +263,87 @@ export default function ProviderScreen() {
     );
   };
 
+  const handleSignOut = async () => {
+    try {
+      await signOut();
+    } catch (error: any) {
+      Alert.alert("Sign out failed", error.message);
+    }
+  };
+
   return (
-    <ScrollView
-      contentContainerStyle={styles.container}
-      refreshControl={
-        <RefreshControl refreshing={loading} onRefresh={loadData} />
-      }
-      keyboardShouldPersistTaps="handled"
-    >
-      <Text style={styles.title}>Fix Now</Text>
-      <Text style={styles.subtitle}>Service Provider Dashboard</Text>
+    <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
+      <ScrollView
+        contentContainerStyle={styles.container}
+        refreshControl={
+          <RefreshControl refreshing={loading} onRefresh={loadData} />
+        }
+        keyboardShouldPersistTaps="handled"
+      >
+      <View style={styles.header}>
+        <View style={styles.brandLockup}>
+          <View style={styles.brandMark}>
+            <Text style={styles.brandMarkText}>F</Text>
+          </View>
+          <Text style={styles.brandName}>
+            Fix<Text style={styles.brandAccent}>Now</Text>
+          </Text>
+        </View>
+        <View style={styles.rolePill}>
+          <Text style={styles.rolePillText}>PROVIDER</Text>
+        </View>
+        <TouchableOpacity
+          accessibilityRole="button"
+          accessibilityLabel="Sign out"
+          onPress={handleSignOut}
+          style={styles.signOutButton}
+        >
+          <Text style={styles.signOutText}>Sign out</Text>
+        </TouchableOpacity>
+      </View>
+
+      <Text style={styles.eyebrow}>YOUR PROFESSIONAL WORKSPACE</Text>
+      <Text style={styles.title}>
+        {profile?.name ? `Welcome, ${profile.name.split(" ")[0]}` : "Grow your service"}
+      </Text>
+      <Text style={styles.subtitle}>
+        Manage your profile and respond to customer requests.
+      </Text>
+
+      <View style={styles.metricsRow}>
+        <View style={styles.metricCard}>
+          <Text style={styles.metricValue}>
+            {bookings.filter((booking) => booking.status === "Pending").length}
+          </Text>
+          <Text style={styles.metricLabel}>Open requests</Text>
+        </View>
+        <View style={styles.metricCard}>
+          <Text
+            style={[
+              styles.metricStatus,
+              profile ? styles.metricLive : styles.metricDraft,
+            ]}
+          >
+            {profile ? "LIVE" : "SETUP"}
+          </Text>
+          <Text style={styles.metricLabel}>Service profile</Text>
+        </View>
+      </View>
 
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>
-          {profile ? "My Service Profile" : "Register Your Service"}
-        </Text>
+        <View style={styles.sectionHeading}>
+          <View style={styles.sectionIcon}>
+            <Text style={styles.sectionIconText}>✦</Text>
+          </View>
+          <View style={styles.sectionHeadingCopy}>
+            <Text style={styles.sectionTitle}>
+              {profile ? "Service profile" : "Set up your profile"}
+            </Text>
+            <Text style={styles.sectionSubtitle}>
+              Help nearby customers find and book you
+            </Text>
+          </View>
+        </View>
 
         <Text style={styles.label}>Full name</Text>
         <TextInput
@@ -357,7 +427,10 @@ export default function ProviderScreen() {
       </View>
 
       <View style={styles.bookingHeader}>
-        <Text style={styles.sectionTitle}>Customer Bookings</Text>
+        <View>
+          <Text style={styles.sectionTitle}>Customer requests</Text>
+          <Text style={styles.sectionSubtitle}>Review and update job status</Text>
+        </View>
         <TouchableOpacity onPress={loadData}>
           <Text style={styles.refreshText}>Refresh</Text>
         </TouchableOpacity>
@@ -366,19 +439,47 @@ export default function ProviderScreen() {
       {loading && <ActivityIndicator style={styles.loader} />}
 
       {!loading && bookings.length === 0 && (
-        <Text style={styles.emptyText}>
+        <View style={styles.emptyCard}>
+          <Text style={styles.emptyIcon}>▣</Text>
+          <Text style={styles.emptyText}>
           No booking requests yet. Save your service profile so customers can find you.
-        </Text>
+          </Text>
+        </View>
       )}
 
       {bookings.map((booking) => (
         <View key={booking.id} style={styles.card}>
-          <Text style={styles.bookingTitle}>
-            Booking #{booking.id} — {booking.status}
+          <View style={styles.bookingTopRow}>
+            <Text style={styles.bookingId}>REQUEST #{booking.id}</Text>
+            <View
+              style={[
+                styles.statusPill,
+                booking.status === "Pending"
+                  ? styles.pendingPill
+                  : booking.status === "Rejected"
+                    ? styles.rejectedPill
+                    : styles.acceptedPill,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.statusPillText,
+                  booking.status === "Pending"
+                    ? styles.pendingText
+                    : booking.status === "Rejected"
+                      ? styles.rejectedText
+                      : styles.acceptedText,
+                ]}
+              >
+                {booking.status}
+              </Text>
+            </View>
+          </View>
+          <Text style={styles.customerName}>{booking.customer_name}</Text>
+          <Text style={styles.bookingDetail}>☎  {booking.customer_phone}</Text>
+          <Text style={styles.bookingDetail}>
+            {booking.problem || "No problem details provided"}
           </Text>
-          <Text>Customer: {booking.customer_name}</Text>
-          <Text>Phone: {booking.customer_phone}</Text>
-          <Text>Problem: {booking.problem || "Not specified"}</Text>
 
           {booking.status === "Pending" && (
             <View style={styles.actions}>
@@ -414,132 +515,246 @@ export default function ProviderScreen() {
           )}
         </View>
       ))}
-    </ScrollView>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  safeArea: { flex: 1, backgroundColor: AppColors.background },
   container: {
     flexGrow: 1,
-    padding: 22,
-    paddingBottom: 40,
-    backgroundColor: "#ffffff",
+    width: "100%",
+    maxWidth: 720,
+    alignSelf: "center",
+    paddingHorizontal: 20,
+    paddingTop: 14,
+    paddingBottom: 36,
+    backgroundColor: AppColors.background,
+  },
+  header: {
+    minHeight: 44,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 25,
+  },
+  brandLockup: { flexDirection: "row", alignItems: "center", gap: 9 },
+  brandMark: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: AppColors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  brandMarkText: { color: AppColors.surface, fontSize: 19, fontWeight: "900" },
+  brandName: { color: AppColors.text, fontSize: 20, fontWeight: "800" },
+  brandAccent: { color: AppColors.primary },
+  rolePill: {
+    backgroundColor: AppColors.primarySoft,
+    borderRadius: 20,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+  },
+  rolePillText: {
+    color: AppColors.primary,
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.8,
+  },
+  signOutButton: { paddingHorizontal: 8, paddingVertical: 10 },
+  signOutText: { color: AppColors.muted, fontSize: 12, fontWeight: "700" },
+  eyebrow: {
+    color: AppColors.primary,
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 1,
+    marginBottom: 7,
   },
   title: {
-    fontSize: 34,
-    fontWeight: "bold",
-    textAlign: "center",
-    marginTop: 24,
-    color: "#111111",
+    color: AppColors.text,
+    fontSize: 28,
+    fontWeight: "800",
+    letterSpacing: -0.5,
   },
   subtitle: {
-    fontSize: 16,
-    textAlign: "center",
-    color: "#666666",
-    marginVertical: 16,
+    fontSize: 13,
+    color: AppColors.muted,
+    lineHeight: 19,
+    marginTop: 6,
+    marginBottom: 18,
   },
+  metricsRow: { flexDirection: "row", gap: 11, marginBottom: 20 },
+  metricCard: {
+    flex: 1,
+    minHeight: 84,
+    backgroundColor: AppColors.surface,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+    borderRadius: 16,
+    padding: 14,
+    justifyContent: "center",
+  },
+  metricValue: { color: AppColors.text, fontSize: 23, fontWeight: "800" },
+  metricStatus: { fontSize: 14, fontWeight: "900", letterSpacing: 0.4 },
+  metricLive: { color: AppColors.success },
+  metricDraft: { color: AppColors.warning },
+  metricLabel: { color: AppColors.muted, fontSize: 11, marginTop: 4 },
+  sectionHeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 17,
+  },
+  sectionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 13,
+    backgroundColor: AppColors.primarySoft,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sectionIconText: { color: AppColors.primary, fontSize: 19 },
+  sectionHeadingCopy: { flex: 1, marginLeft: 11 },
+  sectionSubtitle: { color: AppColors.muted, fontSize: 11, marginTop: 4 },
   section: {
     borderWidth: 1,
-    borderColor: "#dddddd",
-    borderRadius: 12,
+    borderColor: AppColors.border,
+    borderRadius: 19,
     padding: 16,
     marginBottom: 26,
+    backgroundColor: AppColors.surface,
   },
   sectionTitle: {
-    fontSize: 21,
-    fontWeight: "bold",
-    color: "#111111",
+    fontSize: 17,
+    fontWeight: "800",
+    color: AppColors.text,
   },
   label: {
-    fontSize: 15,
-    fontWeight: "600",
-    marginTop: 14,
-    marginBottom: 7,
-    color: "#333333",
+    fontSize: 12,
+    fontWeight: "700",
+    marginTop: 12,
+    marginBottom: 6,
+    color: AppColors.text,
   },
   input: {
     borderWidth: 1,
-    borderColor: "#cccccc",
-    borderRadius: 10,
-    padding: 13,
-    fontSize: 16,
-    color: "#111111",
+    borderColor: AppColors.border,
+    borderRadius: 12,
+    paddingHorizontal: 13,
+    paddingVertical: 12,
+    fontSize: 14,
+    color: AppColors.text,
+    backgroundColor: "#FCFDFF",
   },
   primaryButton: {
-    backgroundColor: "#111111",
-    padding: 15,
-    borderRadius: 10,
-    marginTop: 20,
+    backgroundColor: AppColors.primary,
+    minHeight: 48,
+    paddingHorizontal: 15,
+    borderRadius: 13,
+    justifyContent: "center",
+    marginTop: 17,
   },
   secondaryButton: {
-    backgroundColor: "#eef4ff",
-    padding: 13,
-    borderRadius: 10,
-    marginTop: 16,
+    backgroundColor: AppColors.primarySoft,
+    minHeight: 44,
+    paddingHorizontal: 13,
+    borderRadius: 12,
+    justifyContent: "center",
+    marginTop: 14,
   },
   secondaryButtonText: {
-    color: "#175cd3",
+    color: AppColors.primary,
     textAlign: "center",
-    fontWeight: "bold",
+    fontWeight: "800",
+    fontSize: 12,
   },
   disabledButton: { opacity: 0.6 },
   buttonText: {
-    color: "#ffffff",
-    fontSize: 15,
-    fontWeight: "bold",
+    color: AppColors.surface,
+    fontSize: 13,
+    fontWeight: "800",
     textAlign: "center",
   },
   locationInfo: {
-    fontSize: 12,
-    color: "#666666",
+    fontSize: 11,
+    color: AppColors.muted,
     marginTop: 8,
-    lineHeight: 18,
+    lineHeight: 17,
   },
   availabilityRow: {
     flexDirection: "row",
     alignItems: "center",
-    marginTop: 8,
+    marginTop: 14,
+    paddingVertical: 9,
+    borderTopWidth: 1,
+    borderTopColor: AppColors.border,
   },
   bookingHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+    marginBottom: 13,
+  },
+  refreshText: { color: AppColors.primary, fontWeight: "800", fontSize: 12 },
+  loader: { marginVertical: 18 },
+  emptyCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: AppColors.surface,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+    borderRadius: 16,
+    padding: 15,
     marginBottom: 14,
   },
-  refreshText: { color: "#18794e", fontWeight: "bold" },
-  loader: { marginVertical: 20 },
+  emptyIcon: { color: AppColors.primary, fontSize: 22, marginRight: 12 },
   emptyText: {
-    color: "#666666",
-    textAlign: "center",
-    marginVertical: 20,
-    lineHeight: 22,
+    flex: 1,
+    color: AppColors.muted,
+    fontSize: 12,
+    lineHeight: 18,
   },
   card: {
+    backgroundColor: AppColors.surface,
     borderWidth: 1,
-    borderColor: "#dddddd",
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 14,
-    gap: 8,
+    borderColor: AppColors.border,
+    borderRadius: 17,
+    padding: 15,
+    marginBottom: 12,
+    gap: 7,
   },
-  bookingTitle: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "#111111",
-    marginBottom: 5,
+  bookingTopRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 4,
   },
+  bookingId: { color: AppColors.muted, fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
+  statusPill: { borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6 },
+  pendingPill: { backgroundColor: AppColors.warningSoft },
+  acceptedPill: { backgroundColor: AppColors.successSoft },
+  rejectedPill: { backgroundColor: AppColors.dangerSoft },
+  statusPillText: { fontSize: 10, fontWeight: "800" },
+  pendingText: { color: AppColors.warning },
+  acceptedText: { color: AppColors.success },
+  rejectedText: { color: AppColors.danger },
+  customerName: { color: AppColors.text, fontSize: 15, fontWeight: "800" },
+  bookingDetail: { color: AppColors.muted, fontSize: 12, lineHeight: 17 },
   actions: {
     flexDirection: "row",
     gap: 10,
-    marginTop: 8,
+    marginTop: 6,
   },
   actionButton: {
-    padding: 14,
-    borderRadius: 10,
+    minHeight: 42,
+    paddingHorizontal: 14,
+    borderRadius: 12,
     alignItems: "center",
-    marginTop: 8,
+    justifyContent: "center",
+    marginTop: 6,
   },
-  acceptButton: { flex: 1, backgroundColor: "#18794e" },
-  rejectButton: { flex: 1, backgroundColor: "#b42318" },
-  completeButton: { backgroundColor: "#175cd3" },
+  acceptButton: { flex: 1, backgroundColor: AppColors.success },
+  rejectButton: { flex: 1, backgroundColor: AppColors.danger },
+  completeButton: { backgroundColor: AppColors.primary },
 });

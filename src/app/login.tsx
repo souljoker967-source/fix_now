@@ -1,6 +1,5 @@
 import { useState } from "react";
 import {
-  Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -10,8 +9,9 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { router } from "expo-router";
-import API from "../api/api";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { useSession } from "../auth/session";
+import AppColors from "../constants/app-theme";
 
 export default function LoginScreen() {
   const [isLogin, setIsLogin] = useState(true);
@@ -23,92 +23,75 @@ export default function LoginScreen() {
     "customer"
   );
   const [loading, setLoading] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const { signIn, register, error: sessionError, clearError } = useSession();
 
   async function handleSubmit() {
+    setFormError(null);
+    clearError();
     if (
       !email.trim() ||
       !password ||
       (!isLogin && (!name.trim() || !phone.trim()))
     ) {
-      Alert.alert("Missing details", "Please fill in all required fields.");
+      setFormError("Please fill in all required fields.");
       return;
     }
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-      Alert.alert("Invalid email", "Please enter a valid email address.");
+      setFormError("Please enter a valid email address.");
       return;
     }
 
     if (!isLogin && password.length < 8) {
-      Alert.alert("Password too short", "Use at least 8 characters.");
+      setFormError("Use a password with at least 8 characters.");
       return;
     }
 
     setLoading(true);
 
     try {
-      const response = await API.post(
-        isLogin ? "/login" : "/register",
-        isLogin
-          ? { email: email.trim().toLowerCase(), password }
-          : {
+      const user = isLogin
+        ? await signIn(email.trim().toLowerCase(), password)
+        : await register({
               name: name.trim(),
               email: email.trim().toLowerCase(),
               phone: phone.trim(),
               password,
               account_type: accountType,
-            }
-      );
-
-      const user = response.data.user;
-
-      if (!user || user.id == null) {
-        Alert.alert(
-          "Account error",
-          "The server did not return a valid user ID."
-        );
-        return;
-      }
-
-      const type = user.account_type ?? user.accountType ?? accountType;
-
-      if (type === "provider") {
-        router.replace({
-          pathname: "/provider",
-          params: {
-            userId: String(user.id),
-            accountType: "provider",
-          },
-        });
-      } else {
-        router.replace({
-          pathname: "/customer",
-          params: {
-            userId: String(user.id),
-            accountType: "customer",
-          },
-        });
+            });
+      if (user.account_type !== "customer" && user.account_type !== "provider") {
+        throw new Error("The account has an unsupported role.");
       }
     } catch (error: any) {
-      const message =
+      setFormError(
         error?.response?.data?.message ??
-        "Could not connect or authenticate. Please check your internet connection.";
-      Alert.alert(isLogin ? "Login failed" : "Registration failed", message);
+          error?.message ??
+          "Could not connect or authenticate. Please check your internet connection."
+      );
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.screen}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-    >
-      <ScrollView
-        contentContainerStyle={styles.container}
-        keyboardShouldPersistTaps="handled"
+    <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
+      <KeyboardAvoidingView
+        style={styles.screen}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <Text style={styles.logo}>Fix Now</Text>
+        <ScrollView
+          contentContainerStyle={styles.container}
+          keyboardShouldPersistTaps="handled"
+        >
+        <View style={styles.brandLockup}>
+          <View style={styles.brandMark}>
+            <Text style={styles.brandMarkText}>F</Text>
+          </View>
+          <Text style={styles.logo}>
+            Fix<Text style={styles.logoAccent}>Now</Text>
+          </Text>
+        </View>
         <Text style={styles.title}>
           {isLogin ? "Welcome back" : "Create your account"}
         </Text>
@@ -117,6 +100,11 @@ export default function LoginScreen() {
             ? "Log in to continue"
             : "One account for all your home service needs"}
         </Text>
+        {(formError || sessionError) && (
+          <Text accessibilityRole="alert" style={styles.errorMessage}>
+            {formError || sessionError}
+          </Text>
+        )}
 
         {!isLogin && (
           <>
@@ -143,6 +131,8 @@ export default function LoginScreen() {
               {(["customer", "provider"] as const).map((type) => (
                 <TouchableOpacity
                   key={type}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: accountType === type }}
                   style={[
                     styles.typeButton,
                     accountType === type && styles.selectedType,
@@ -156,6 +146,16 @@ export default function LoginScreen() {
                     ]}
                   >
                     {type === "customer" ? "Customer" : "Service Provider"}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.typeDescription,
+                      accountType === type && styles.selectedTypeDescription,
+                    ]}
+                  >
+                    {type === "customer"
+                      ? "Book trusted local help"
+                      : "Offer your professional services"}
                   </Text>
                 </TouchableOpacity>
               ))}
@@ -209,81 +209,126 @@ export default function LoginScreen() {
               : "Already have an account? Log in"}
           </Text>
         </TouchableOpacity>
-      </ScrollView>
-    </KeyboardAvoidingView>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: "#ffffff" },
+  safeArea: { flex: 1, backgroundColor: AppColors.background },
+  screen: { flex: 1, backgroundColor: AppColors.background },
   container: {
     flexGrow: 1,
     justifyContent: "center",
-    paddingHorizontal: 26,
-    paddingVertical: 35,
+    width: "100%",
+    maxWidth: 520,
+    alignSelf: "center",
+    paddingHorizontal: 24,
+    paddingVertical: 32,
   },
-  logo: {
-    color: "#111111",
-    fontSize: 40,
-    fontWeight: "bold",
-    textAlign: "center",
-    marginBottom: 18,
-  },
-  title: {
-    fontSize: 27,
-    fontWeight: "bold",
-    textAlign: "center",
-    marginBottom: 10,
-  },
-  subtitle: {
-    fontSize: 15,
-    color: "#666666",
-    textAlign: "center",
+  brandLockup: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
     marginBottom: 30,
   },
-  label: {
-    fontSize: 15,
-    fontWeight: "600",
+  brandMark: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    backgroundColor: AppColors.primary,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  brandMarkText: { color: AppColors.surface, fontSize: 22, fontWeight: "900" },
+  logoAccent: { color: AppColors.primary },
+  logo: {
+    color: AppColors.text,
+    fontSize: 27,
+    fontWeight: "800",
+  },
+  title: {
+    color: AppColors.text,
+    fontSize: 29,
+    fontWeight: "800",
+    letterSpacing: -0.4,
     marginBottom: 8,
-    color: "#222222",
+  },
+  subtitle: {
+    fontSize: 14,
+    color: AppColors.muted,
+    lineHeight: 21,
+    marginBottom: 27,
+  },
+  errorMessage: {
+    color: AppColors.danger,
+    backgroundColor: "#FFF1F0",
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  label: {
+    fontSize: 13,
+    fontWeight: "700",
+    marginBottom: 8,
+    color: AppColors.text,
   },
   input: {
     borderWidth: 1,
-    borderColor: "#cccccc",
-    borderRadius: 12,
-    paddingHorizontal: 15,
+    borderColor: AppColors.border,
+    borderRadius: 13,
+    paddingHorizontal: 14,
     paddingVertical: 14,
-    fontSize: 16,
+    fontSize: 15,
     marginBottom: 18,
-    color: "#111111",
+    color: AppColors.text,
+    backgroundColor: AppColors.surface,
   },
   typeRow: { flexDirection: "row", gap: 10, marginBottom: 22 },
   typeButton: {
     flex: 1,
     borderWidth: 1,
-    borderColor: "#cccccc",
-    borderRadius: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 8,
-    alignItems: "center",
+    borderColor: AppColors.border,
+    borderRadius: 15,
+    paddingVertical: 13,
+    paddingHorizontal: 12,
+    minHeight: 80,
+    justifyContent: "center",
+    backgroundColor: AppColors.surface,
   },
-  selectedType: { backgroundColor: "#111111", borderColor: "#111111" },
-  typeText: { fontSize: 14, fontWeight: "600", color: "#222222" },
-  selectedTypeText: { color: "#ffffff" },
+  selectedType: {
+    backgroundColor: AppColors.primarySoft,
+    borderColor: AppColors.primary,
+  },
+  typeText: { fontSize: 13, fontWeight: "800", color: AppColors.text },
+  selectedTypeText: { color: AppColors.primaryDark },
+  typeDescription: {
+    color: AppColors.muted,
+    fontSize: 10,
+    lineHeight: 14,
+    marginTop: 5,
+  },
+  selectedTypeDescription: { color: AppColors.primaryDark },
   submitButton: {
-    backgroundColor: "#111111",
-    borderRadius: 12,
-    padding: 17,
+    backgroundColor: AppColors.primary,
+    borderRadius: 14,
+    minHeight: 52,
+    paddingHorizontal: 17,
     alignItems: "center",
+    justifyContent: "center",
     marginTop: 5,
   },
   disabledButton: { opacity: 0.6 },
-  submitText: { color: "#ffffff", fontSize: 17, fontWeight: "bold" },
+  submitText: { color: AppColors.surface, fontSize: 15, fontWeight: "800" },
   switchButton: { padding: 18, alignItems: "center" },
   switchText: {
-    color: "#333333",
-    fontSize: 15,
-    fontWeight: "600",
+    color: AppColors.primary,
+    fontSize: 13,
+    fontWeight: "700",
     textAlign: "center",
   },
 });
