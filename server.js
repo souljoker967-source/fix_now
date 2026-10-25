@@ -145,6 +145,69 @@ function requireRole(role) {
   };
 }
 
+function getSafeDatabaseCode(error) {
+  return typeof error?.code === "string" && /^[A-Z0-9_]+$/.test(error.code)
+    ? error.code
+    : "DATABASE_ERROR";
+}
+
+function logDatabaseFailure(operation, error) {
+  const diagnosticId = crypto.randomUUID();
+  const code = getSafeDatabaseCode(error);
+
+  console.error(
+    `${operation} database request failed (ref=${diagnosticId}, code=${code}, errno=${error?.errno ?? "unknown"}, sqlState=${error?.sqlState ?? "unknown"}).`
+  );
+
+  return { diagnosticId, code };
+}
+
+function registrationDatabaseError(error) {
+  const { diagnosticId, code } = logDatabaseFailure("Registration", error);
+  const schemaErrors = new Set([
+    "ER_BAD_FIELD_ERROR",
+    "ER_BAD_NULL_ERROR",
+    "ER_NO_DEFAULT_FOR_FIELD",
+    "ER_NO_SUCH_TABLE",
+  ]);
+  const availabilityErrors = new Set([
+    "ECONNREFUSED",
+    "ER_CON_COUNT_ERROR",
+    "ER_LOCK_WAIT_TIMEOUT",
+    "ETIMEDOUT",
+    "PROTOCOL_CONNECTION_LOST",
+  ]);
+
+  if (code === "ER_DUP_ENTRY") {
+    return {
+      status: 409,
+      message: "That email or phone number is already registered.",
+    };
+  }
+  if (code === "ER_DATA_TOO_LONG" || code === "WARN_DATA_TRUNCATED") {
+    return {
+      status: 400,
+      message: "One or more registration details are too long. Please shorten them and try again.",
+    };
+  }
+  if (schemaErrors.has(code)) {
+    return {
+      status: 500,
+      message: `Account setup is incomplete (${code}). Please contact support with reference ${diagnosticId}.`,
+    };
+  }
+  if (availabilityErrors.has(code)) {
+    return {
+      status: 503,
+      message: "Account service is temporarily unavailable. Please try again shortly.",
+    };
+  }
+  return {
+    status: 500,
+    message: `Unable to create account right now (${code}). Please contact support with reference ${diagnosticId}.`,
+  };
+}
+
 function formatMysqlConnectionError(error) {
   let message = error.message;
   const credentials = [
@@ -582,13 +645,8 @@ app.post("/register", async (req, res) => {
       ],
       (err, result) => {
         if (err) {
-          if (err.code === "ER_DUP_ENTRY") {
-            return res.status(409).json({
-              message: "That email or phone number is already registered.",
-            });
-          }
-          console.error("Registration failed:", err.message);
-          return res.status(500).json({ message: "Unable to create account." });
+          const failure = registrationDatabaseError(err);
+          return res.status(failure.status).json({ message: failure.message });
         }
 
         const user = {
@@ -606,8 +664,11 @@ app.post("/register", async (req, res) => {
       }
     );
   } catch (err) {
-    console.error("Password hashing failed:", err.message);
-    res.status(500).json({ message: "Unable to create account." });
+    const diagnosticId = crypto.randomUUID();
+    console.error(`Password hashing failed (ref=${diagnosticId}).`);
+    res.status(500).json({
+      message: `Unable to prepare your account. Please contact support with reference ${diagnosticId}.`,
+    });
   }
 });
 
@@ -638,8 +699,10 @@ app.post("/login", (req, res) => {
     [String(email).trim().toLowerCase()],
     async (err, results) => {
       if (err) {
-        console.error("Login failed:", err.message);
-        return res.status(500).json({ message: "Unable to log in." });
+        const diagnostic = logDatabaseFailure("Login", err);
+        return res.status(500).json({
+          message: `Unable to read account data (${diagnostic.code}). Please contact support with reference ${diagnostic.diagnosticId}.`,
+        });
       }
 
       if (!results.length) {

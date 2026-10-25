@@ -9,6 +9,8 @@ const users = new Map();
 const bookings = [];
 let nextUserId = 3;
 let nextBookingId = 1;
+let nextInsertError = null;
+let nextLoginError = null;
 const provider = {
   id: 9,
   user_id: 2,
@@ -43,7 +45,16 @@ db.query = (query, params, callback) => {
 
   if (sql.startsWith("INSERT INTO users")) {
     const [name, email, phone, password, account_type] = params;
-    if ([...users.values()].some((user) => user.email === email)) {
+    if (nextInsertError) {
+      const error = nextInsertError;
+      nextInsertError = null;
+      return callback(error);
+    }
+    if (
+      [...users.values()].some(
+        (user) => user.email === email || user.phone === phone
+      )
+    ) {
       return callback({ code: "ER_DUP_ENTRY", message: "Duplicate user" });
     }
     const user = {
@@ -59,6 +70,11 @@ db.query = (query, params, callback) => {
   }
 
   if (sql.includes("FROM users WHERE email = ?")) {
+    if (nextLoginError) {
+      const error = nextLoginError;
+      nextLoginError = null;
+      return callback(error);
+    }
     const user = [...users.values()].find((entry) => entry.email === params[0]);
     return callback(null, user ? [user] : []);
   }
@@ -175,26 +191,162 @@ async function request(path, { method = "GET", token, body } = {}) {
   };
 }
 
-test("registration hashes passwords and returns a signed customer session", async () => {
-  const result = await request("/register", {
+async function registerAccount({
+  name = "New Account",
+  email,
+  phone,
+  password = "NewPassword123",
+  account_type,
+}) {
+  return request("/register", {
     method: "POST",
     body: {
-      name: "New Customer",
-      email: "new@example.com",
-      phone: "5550103",
-      password: "NewPassword123",
-      account_type: "customer",
+      name,
+      email,
+      phone,
+      password,
+      account_type,
     },
   });
+}
 
-  assert.equal(result.status, 201);
-  assert.equal(typeof result.body.token, "string");
-  assert.equal(result.body.user.account_type, "customer");
-  assert.equal("password" in result.body.user, false);
+test("registration creates customer and provider accounts with hashed passwords", async () => {
+  const customer = await registerAccount({
+    name: "New Customer",
+    email: "new-customer@example.com",
+    phone: "5550103",
+    account_type: "customer",
+  });
+
+  assert.equal(customer.status, 201);
+  assert.equal(typeof customer.body.token, "string");
+  assert.equal(customer.body.user.account_type, "customer");
+  assert.equal("password" in customer.body.user, false);
   assert.equal(
     await bcrypt.compare("NewPassword123", users.get(3).password),
     true
   );
+
+  const provider = await registerAccount({
+    name: "New Provider",
+    email: "new-provider@example.com",
+    phone: "5550104",
+    account_type: "provider",
+  });
+  assert.equal(provider.status, 201);
+  assert.equal(provider.body.user.account_type, "provider");
+  assert.equal(
+    await bcrypt.compare("NewPassword123", users.get(4).password),
+    true
+  );
+});
+
+test("registration rejects duplicate email and duplicate phone without creating accounts", async () => {
+  const originalCount = users.size;
+  const duplicateEmail = await registerAccount({
+    email: "customer@example.com",
+    phone: "5550191",
+    account_type: "customer",
+  });
+  assert.equal(duplicateEmail.status, 409);
+  assert.match(duplicateEmail.body.message, /email or phone number/);
+
+  const duplicatePhone = await registerAccount({
+    email: "another@example.com",
+    phone: "5550101",
+    account_type: "provider",
+  });
+  assert.equal(duplicatePhone.status, 409);
+  assert.match(duplicatePhone.body.message, /email or phone number/);
+  assert.equal(users.size, originalCount);
+});
+
+test("registration rejects invalid fields and unsupported account roles", async () => {
+  const originalCount = users.size;
+  const invalidRequests = [
+    { email: "bad-email", phone: "5550192", account_type: "customer" },
+    { email: "valid@example.com", phone: "5550193", account_type: "admin" },
+    {
+      email: "short-password@example.com",
+      phone: "5550194",
+      password: "short",
+      account_type: "customer",
+    },
+    {
+      name: " ",
+      email: "blank-name@example.com",
+      phone: "5550195",
+      account_type: "provider",
+    },
+  ];
+
+  for (const input of invalidRequests) {
+    const result = await registerAccount(input);
+    assert.equal(result.status, 400);
+    assert.equal(typeof result.body.message, "string");
+  }
+  assert.equal(users.size, originalCount);
+});
+
+test("registration returns safe actionable database errors", async () => {
+  nextInsertError = {
+    code: "ER_NO_SUCH_TABLE",
+    errno: 1146,
+    sqlState: "42S02",
+    message: "sensitive SQL and account data must not be returned",
+  };
+  const schemaFailure = await registerAccount({
+    email: "schema-failure@example.com",
+    phone: "5550196",
+    account_type: "customer",
+  });
+  assert.equal(schemaFailure.status, 500);
+  assert.match(schemaFailure.body.message, /Account setup is incomplete/);
+  assert.doesNotMatch(
+    JSON.stringify(schemaFailure.body),
+    /sensitive SQL|42S02|1146/
+  );
+  assert.equal(nextInsertError, null);
+
+  nextInsertError = {
+    code: "ER_DATA_TOO_LONG",
+    message: "raw database contents are not client-facing",
+  };
+  const dataFailure = await registerAccount({
+    email: "long-details@example.com",
+    phone: "5550197",
+    account_type: "provider",
+  });
+  assert.equal(dataFailure.status, 400);
+  assert.match(dataFailure.body.message, /too long/);
+  assert.doesNotMatch(
+    JSON.stringify(dataFailure.body),
+    /raw database contents/
+  );
+});
+
+test("login failures include a safe database code and reference", async () => {
+  nextLoginError = {
+    code: "ER_NO_SUCH_TABLE",
+    errno: 1146,
+    sqlState: "42S02",
+    message: "sensitive SQL and account data must not be returned",
+  };
+  const result = await request("/login", {
+    method: "POST",
+    body: {
+      email: "nonexistent@example.com",
+      password: "SyntheticPassword123",
+    },
+  });
+  assert.equal(result.status, 500);
+  assert.match(result.body.message, /ER_NO_SUCH_TABLE/);
+  assert.match(result.body.message, /reference [0-9a-f-]{36}/);
+  assert.doesNotMatch(
+    JSON.stringify(result.body),
+    /sensitive SQL|42S02|1146/
+  );
+  assert.equal(nextLoginError, null);
 });
 
 test("login authenticates passwords and /auth/me restores the signed session", async () => {
