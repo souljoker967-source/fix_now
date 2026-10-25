@@ -1,6 +1,7 @@
 const { after, before, test } = require("node:test");
 const assert = require("node:assert/strict");
 const bcrypt = require("bcryptjs");
+const { DEMO_PROVIDERS } = require("./demo-providers");
 
 process.env.AUTH_TOKEN_SECRET = "local-test-secret-with-at-least-32-bytes";
 
@@ -102,11 +103,26 @@ db.query = (query, params, callback) => {
   }
 
   if (sql.includes("FROM providers WHERE service_type LIKE")) {
+    const serviceMatches = provider.service_type
+      .toLowerCase()
+      .includes(String(params[0]).slice(1, -1).toLowerCase());
+    const locationParameter = params.find(
+      (parameter) =>
+        typeof parameter === "string" &&
+        parameter.startsWith("%") &&
+        parameter.endsWith("%") &&
+        parameter !== params[0]
+    );
+    const locationMatches =
+      !locationParameter ||
+      provider.location
+        .toLowerCase()
+        .includes(locationParameter.slice(1, -1).toLowerCase());
+    const availabilityMatches =
+      !sql.includes("AND is_available = 1") || Boolean(provider.is_available);
     return callback(
       null,
-      provider.service_type.toLowerCase().includes(String(params[0]).slice(1, -1).toLowerCase())
-        ? [provider]
-        : []
+      serviceMatches && locationMatches && availabilityMatches ? [provider] : []
     );
   }
 
@@ -444,6 +460,87 @@ test("customer search and booking use the authenticated customer identity", asyn
   });
   assert.equal(history.status, 200);
   assert.equal(history.body.bookings.length, 1);
+});
+
+test("customer search returns eight clearly marked demo profiles without accounts", async () => {
+  assert.equal(DEMO_PROVIDERS.length, 8);
+  assert.equal(new Set(DEMO_PROVIDERS.map((item) => item.id)).size, 8);
+  assert.ok(DEMO_PROVIDERS.every((item) => item.phone === "DEMO ONLY"));
+  assert.ok(DEMO_PROVIDERS.every((item) => item.user_id === null));
+
+  const login = await request("/login", {
+    method: "POST",
+    body: {
+      email: "customer@example.com",
+      password: "CustomerPassword123",
+    },
+  });
+  const categories = [
+    "Electrical",
+    "Plumbing",
+    "Cleaning",
+    "Carpentry",
+    "Painting",
+    "Appliance Repair",
+  ];
+
+  for (const service of categories) {
+    const result = await request(
+      `/providers/search?service=${encodeURIComponent(service)}`,
+      { token: login.body.token }
+    );
+    assert.equal(result.status, 200);
+    assert.ok(result.body.providers.some((item) => item.is_demo));
+  }
+
+  const nagercoil = await request(
+    "/providers/search?service=Plumbing&location=Nagercoil",
+    { token: login.body.token }
+  );
+  assert.deepEqual(
+    nagercoil.body.providers.map((item) => item.id),
+    ["demo:revathi-anand-plumbing"]
+  );
+  assert.equal(nagercoil.body.providers[0].is_demo, true);
+  assert.equal(nagercoil.body.providers[0].starting_price_inr, 300);
+
+  const applianceAlias = await request(
+    "/providers/search?service=Appliances&location=Marthandam",
+    { token: login.body.token }
+  );
+  assert.deepEqual(
+    applianceAlias.body.providers.map((item) => item.id),
+    ["demo:vignesh-balan-appliance-repair"]
+  );
+
+  const nearbyElectrical = await request(
+    "/providers/search?service=Electrical&lat=8.1833&lon=77.4119&radiusKm=5",
+    { token: login.body.token }
+  );
+  assert.ok(
+    nearbyElectrical.body.providers.some(
+      (item) => item.id === "demo:arjun-kumar-electrical"
+    )
+  );
+
+  const unavailableFiltered = await request(
+    "/providers/search?service=Plumbing&location=Nagercoil&availableOnly=true",
+    { token: login.body.token }
+  );
+  assert.equal(unavailableFiltered.body.count, 0);
+
+  const bookingCount = bookings.length;
+  const demoBooking = await request("/bookings", {
+    method: "POST",
+    token: login.body.token,
+    body: {
+      customer_id: 1,
+      provider_id: "demo:revathi-anand-plumbing",
+      problem: "Demo request",
+    },
+  });
+  assert.equal(demoBooking.status, 400);
+  assert.equal(bookings.length, bookingCount);
 });
 
 test("provider can update status only on a booking tied to their own profile", async () => {

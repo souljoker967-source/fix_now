@@ -8,6 +8,7 @@ const bcrypt = require("bcryptjs");
 const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { findDemoProviders } = require("./demo-providers");
 
 const app = express();
 app.use(cors());
@@ -377,7 +378,11 @@ app.get("/providers/search", authenticateToken, requireRole("customer"), (req, r
   `;
 
   const params = hasLat ? [userLat, userLon, userLat] : [];
-  params.push(`%${service.trim()}%`);
+  const serviceSearch =
+    service.trim().toLocaleLowerCase() === "appliances"
+      ? "Appliance"
+      : service.trim();
+  params.push(`%${serviceSearch}%`);
 
   if (typeof location === "string" && location.trim()) {
     sql += " AND location LIKE ?";
@@ -403,16 +408,47 @@ app.get("/providers/search", authenticateToken, requireRole("customer"), (req, r
       return res.status(500).json({ message: "Unable to search providers." });
     }
 
-    res.json({
-      count: rows.length,
-      providers: rows.map((provider) => ({
+    const demoProviders = findDemoProviders({
+      service: service.trim(),
+      location,
+      latitude: hasLat ? userLat : null,
+      longitude: hasLon ? userLon : null,
+      radiusKm: radius,
+      availableOnly: String(availableOnly).toLowerCase() === "true",
+    });
+    const providers = [
+      ...rows.map((provider) => ({
         ...provider,
         distance_km:
           provider.distance_km == null
             ? null
             : Number(Number(provider.distance_km).toFixed(2)),
         is_available: Boolean(provider.is_available),
+        is_demo: false,
+        starting_price_inr: null,
+        experience_years: null,
+        demo_rating: null,
+        description: null,
       })),
+      ...demoProviders,
+    ].sort((first, second) => {
+      if (first.is_available !== second.is_available) {
+        return Number(second.is_available) - Number(first.is_available);
+      }
+      if (
+        hasLat &&
+        first.distance_km != null &&
+        second.distance_km != null &&
+        first.distance_km !== second.distance_km
+      ) {
+        return first.distance_km - second.distance_km;
+      }
+      return first.name.localeCompare(second.name);
+    });
+
+    res.json({
+      count: providers.length,
+      providers,
     });
   });
 });

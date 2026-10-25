@@ -39,6 +39,17 @@ Run the backend route/authentication checks with `npm test`. They use an
 in-memory database stub and do not test the live Render service or TiDB
 connection.
 
+## Fictional demonstration providers
+
+The authenticated customer provider search includes eight code-managed,
+fictional Tamil Nadu demo profiles. They are separate from the `users`,
+`providers`, and `bookings` tables, so enabling them does not create accounts or
+change existing database data. Each result is marked as a demo, uses no real
+contact number, and cannot be booked. Prices, experience, availability, and
+ratings are illustrative. Deploying a backend change makes the profiles
+available through search; an updated Android APK is needed to show the demo
+labels and profile details in the app.
+
 ## Get started
 
 1. Install dependencies
