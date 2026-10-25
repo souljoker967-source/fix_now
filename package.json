@@ -5,6 +5,9 @@
   "dependencies": {
     "@expo/ui": "~57.0.18",
     "axios": "^1.20.0",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.9",
     "expo": "~57.0.22",
     "expo-constants": "~57.0.18",
     "expo-device": "~57.0.2",
@@ -20,6 +23,8 @@
     "expo-symbols": "~57.0.3",
     "expo-system-ui": "~57.0.4",
     "expo-web-browser": "~57.0.3",
+    "express": "^5.3.0",
+    "mysql2": "^3.24.6",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.3",
@@ -36,6 +41,9 @@
   },
   "scripts": {
     "start": "expo start",
+    "server": "node server.js",
+    "test": "node --test server.test.js",
+    "test:db": "node server.js --test-db",
     "reset-project": "node ./scripts/reset-project.js",
     "android": "expo start --android",
     "ios": "expo start --ios",

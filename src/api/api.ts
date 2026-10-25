@@ -1,5 +1,6 @@
 import { create } from "axios";
 
+<<<<<<< HEAD
 let authToken: string | null = null;
 
 const API = create({
