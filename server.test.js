@@ -1,0 +1,326 @@
+const { after, before, test } = require("node:test");
+const assert = require("node:assert/strict");
+const bcrypt = require("bcryptjs");
+
+process.env.AUTH_TOKEN_SECRET = "local-test-secret-with-at-least-32-bytes";
+
+const { app, db } = require("./server");
+const users = new Map();
+const bookings = [];
+let nextUserId = 3;
+let nextBookingId = 1;
+const provider = {
+  id: 9,
+  user_id: 2,
+  name: "Test Provider",
+  phone: "5550102",
+  service_type: "Plumbing",
+  location: "Test City",
+  latitude: null,
+  longitude: null,
+  is_available: 1,
+};
+
+users.set(1, {
+  id: 1,
+  name: "Test Customer",
+  email: "customer@example.com",
+  phone: "5550101",
+  password: bcrypt.hashSync("CustomerPassword123", 4),
+  account_type: "customer",
+});
+users.set(2, {
+  id: 2,
+  name: "Test Provider",
+  email: "provider@example.com",
+  phone: "5550102",
+  password: bcrypt.hashSync("ProviderPassword123", 4),
+  account_type: "provider",
+});
+
+db.query = (query, params, callback) => {
+  const sql = query.replace(/\s+/g, " ").trim();
+
+  if (sql.startsWith("INSERT INTO users")) {
+    const [name, email, phone, password, account_type] = params;
+    if ([...users.values()].some((user) => user.email === email)) {
+      return callback({ code: "ER_DUP_ENTRY", message: "Duplicate user" });
+    }
+    const user = {
+      id: nextUserId++,
+      name,
+      email,
+      phone,
+      password,
+      account_type,
+    };
+    users.set(user.id, user);
+    return callback(null, { insertId: user.id });
+  }
+
+  if (sql.includes("FROM users WHERE email = ?")) {
+    const user = [...users.values()].find((entry) => entry.email === params[0]);
+    return callback(null, user ? [user] : []);
+  }
+
+  if (sql.includes("FROM users WHERE id = ? AND account_type")) {
+    const user = users.get(Number(params[0]));
+    return callback(
+      null,
+      user?.account_type === "provider" ? [{ id: user.id }] : []
+    );
+  }
+
+  if (sql.includes("FROM users WHERE id = ? LIMIT 1")) {
+    const user = users.get(Number(params[0]));
+    const fields = user
+      ? [{
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          phone: user.phone,
+          account_type: user.account_type,
+        }]
+      : [];
+    return callback(null, fields);
+  }
+
+  if (sql.includes("FROM providers WHERE service_type LIKE")) {
+    return callback(
+      null,
+      provider.service_type.toLowerCase().includes(String(params[0]).slice(1, -1).toLowerCase())
+        ? [provider]
+        : []
+    );
+  }
+
+  if (sql.includes("FROM providers WHERE user_id = ? LIMIT 1")) {
+    return callback(null, provider.user_id === Number(params[0]) ? [provider] : []);
+  }
+
+  if (sql.startsWith("INSERT INTO bookings")) {
+    const [, providerId, customerId] = params;
+    if (Number(providerId) !== provider.id || Number(customerId) !== 1) {
+      return callback(null, { insertId: 0, affectedRows: 0 });
+    }
+    const booking = {
+      id: nextBookingId++,
+      customer_id: Number(customerId),
+      provider_id: Number(providerId),
+      problem: params[0],
+      status: "Pending",
+    };
+    bookings.push(booking);
+    return callback(null, { insertId: booking.id, affectedRows: 1 });
+  }
+
+  if (sql.includes("FROM bookings b") && sql.includes("WHERE b.customer_id = ?")) {
+    return callback(
+      null,
+      bookings.filter((booking) => booking.customer_id === Number(params[0]))
+    );
+  }
+
+  if (sql.includes("FROM bookings b") && sql.includes("WHERE p.user_id = ?")) {
+    return callback(
+      null,
+      provider.user_id === Number(params[0])
+        ? bookings.filter((booking) => booking.provider_id === provider.id)
+        : []
+    );
+  }
+
+  if (sql.startsWith("UPDATE bookings b")) {
+    const [status, bookingId, providerId, userId] = params;
+    const booking = bookings.find(
+      (entry) =>
+        entry.id === Number(bookingId) &&
+        entry.provider_id === Number(providerId) &&
+        provider.user_id === Number(userId)
+    );
+    if (booking) booking.status = status;
+    return callback(null, { affectedRows: booking ? 1 : 0 });
+  }
+
+  return callback(new Error(`Unexpected test query: ${sql}`));
+};
+
+let server;
+let baseUrl;
+
+before(async () => {
+  server = app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  baseUrl = `http://127.0.0.1:${server.address().port}`;
+});
+
+after(async () => {
+  await new Promise((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve()))
+  );
+});
+
+async function request(path, { method = "GET", token, body } = {}) {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(body ? { "Content-Type": "application/json" } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  return {
+    status: response.status,
+    body: await response.json(),
+  };
+}
+
+test("registration hashes passwords and returns a signed customer session", async () => {
+  const result = await request("/register", {
+    method: "POST",
+    body: {
+      name: "New Customer",
+      email: "new@example.com",
+      phone: "5550103",
+      password: "NewPassword123",
+      account_type: "customer",
+    },
+  });
+
+  assert.equal(result.status, 201);
+  assert.equal(typeof result.body.token, "string");
+  assert.equal(result.body.user.account_type, "customer");
+  assert.equal("password" in result.body.user, false);
+  assert.equal(
+    await bcrypt.compare("NewPassword123", users.get(3).password),
+    true
+  );
+});
+
+test("login authenticates passwords and /auth/me restores the signed session", async () => {
+  const rejected = await request("/login", {
+    method: "POST",
+    body: { email: "customer@example.com", password: "incorrect" },
+  });
+  assert.equal(rejected.status, 401);
+
+  const loggedIn = await request("/login", {
+    method: "POST",
+    body: {
+      email: "customer@example.com",
+      password: "CustomerPassword123",
+    },
+  });
+  assert.equal(loggedIn.status, 200);
+  const restored = await request("/auth/me", { token: loggedIn.body.token });
+  assert.equal(restored.status, 200);
+  assert.equal(restored.body.user.id, 1);
+});
+
+test("protected routes require tokens and enforce account role and ownership", async () => {
+  const publicSearch = await request("/providers/search?service=Plumbing");
+  assert.equal(publicSearch.status, 401);
+
+  const customer = await request("/login", {
+    method: "POST",
+    body: {
+      email: "customer@example.com",
+      password: "CustomerPassword123",
+    },
+  });
+  const providerLogin = await request("/login", {
+    method: "POST",
+    body: {
+      email: "provider@example.com",
+      password: "ProviderPassword123",
+    },
+  });
+
+  const wrongRole = await request("/providers/by-user/2", {
+    token: customer.body.token,
+  });
+  assert.equal(wrongRole.status, 403);
+
+  const wrongOwner = await request("/bookings/customer/3", {
+    token: customer.body.token,
+  });
+  assert.equal(wrongOwner.status, 403);
+
+  const providerReadsCustomerBookings = await request("/bookings/customer/1", {
+    token: providerLogin.body.token,
+  });
+  assert.equal(providerReadsCustomerBookings.status, 403);
+});
+
+test("customer search and booking use the authenticated customer identity", async () => {
+  const login = await request("/login", {
+    method: "POST",
+    body: {
+      email: "customer@example.com",
+      password: "CustomerPassword123",
+    },
+  });
+
+  const search = await request("/providers/search?service=Plumbing&location=Test%20City", {
+    token: login.body.token,
+  });
+  assert.equal(search.status, 200);
+  assert.equal(search.body.providers.length, 1);
+
+  const created = await request("/bookings", {
+    method: "POST",
+    token: login.body.token,
+    body: { customer_id: 2, provider_id: 9, problem: "Leaking tap" },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.booking.customer_id, 1);
+
+  const history = await request("/bookings/customer/1", {
+    token: login.body.token,
+  });
+  assert.equal(history.status, 200);
+  assert.equal(history.body.bookings.length, 1);
+});
+
+test("provider can update status only on a booking tied to their own profile", async () => {
+  const login = await request("/login", {
+    method: "POST",
+    body: {
+      email: "provider@example.com",
+      password: "ProviderPassword123",
+    },
+  });
+
+  const updated = await request("/bookings/1/status", {
+    method: "PATCH",
+    token: login.body.token,
+    body: { status: "Accepted", provider_id: 9 },
+  });
+  assert.equal(updated.status, 200);
+  assert.equal(bookings[0].status, "Accepted");
+
+  const rejected = await request("/bookings/1/status", {
+    method: "PATCH",
+    token: login.body.token,
+    body: { status: "Completed", provider_id: 10 },
+  });
+  assert.equal(rejected.status, 404);
+});
+
+test("authentication is unavailable when the production token secret is missing", async () => {
+  const configuredSecret = process.env.AUTH_TOKEN_SECRET;
+  delete process.env.AUTH_TOKEN_SECRET;
+  try {
+    const result = await request("/login", {
+      method: "POST",
+      body: {
+        email: "customer@example.com",
+        password: "CustomerPassword123",
+      },
+    });
+    assert.equal(result.status, 503);
+    assert.match(result.body.message, /AUTH_TOKEN_SECRET/);
+  } finally {
+    process.env.AUTH_TOKEN_SECRET = configuredSecret;
+  }
+});

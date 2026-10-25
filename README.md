@@ -19,16 +19,25 @@ belong in the Expo app.
    does not require a custom CA; set `MYSQL_SSL_CA` only if your cluster
    explicitly requires one. Allow the backend host's outbound IP addresses in
    the cluster's network access settings.
-4. Set `EXPO_PUBLIC_API_URL` to the public URL of that existing backend. For
-   local Expo development, copy `.env.example` to `.env` and update the API URL.
-   The API URL is public app configuration; database credentials stay on the
+4. Generate a private secret (for example,
+   `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`)
+   and add it in Render under **Service → Environment** as `AUTH_TOKEN_SECRET`.
+   Keep this value stable so existing sessions remain valid. The API returns
+   signed, seven-day bearer tokens; the app stores them with Expo SecureStore.
+   Deploy this backend change to Render before installing the updated app.
+5. The app's default API URL is `https://fix-now.onrender.com`. To use another
+   URL, set `EXPO_PUBLIC_API_URL` before building. The API URL is public app
+   configuration; database credentials and the auth-token secret stay on the
    backend.
 
-The existing Railway API URL remains the default if `EXPO_PUBLIC_API_URL` is
-not set. Start the existing backend locally with `npm run server`.
+Start the existing backend locally with `npm run server`.
 To check the database connection using the configured environment variables,
 run `npm run test:db`. It reports the connection result without printing
 configured credentials.
+
+Run the backend route/authentication checks with `npm test`. They use an
+in-memory database stub and do not test the live Render service or TiDB
+connection.
 
 ## Get started
 

@@ -5,6 +5,7 @@ const express = require("express");
 const cors = require("cors");
 const mysql = require("mysql2");
 const bcrypt = require("bcryptjs");
+const crypto = require("node:crypto");
 
 const app = express();
 app.use(cors());
@@ -44,6 +45,106 @@ const db = mysql.createPool({
   connectionLimit: 10,
 });
 
+const AUTH_TOKEN_LIFETIME_SECONDS = 60 * 60 * 24 * 7;
+
+function getAuthTokenSecret() {
+  const secret = process.env.AUTH_TOKEN_SECRET;
+  if (!secret || Buffer.byteLength(secret) < 32) {
+    throw new Error("AUTH_TOKEN_SECRET must be configured with at least 32 bytes.");
+  }
+  return secret;
+}
+
+function createAuthToken(user) {
+  const now = Math.floor(Date.now() / 1000);
+  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" }))
+    .toString("base64url");
+  const payload = Buffer.from(
+    JSON.stringify({
+      sub: Number(user.id),
+      account_type: user.account_type,
+      iat: now,
+      exp: now + AUTH_TOKEN_LIFETIME_SECONDS,
+    })
+  ).toString("base64url");
+  const signingInput = `${header}.${payload}`;
+  const signature = crypto
+    .createHmac("sha256", getAuthTokenSecret())
+    .update(signingInput)
+    .digest("base64url");
+
+  return `${signingInput}.${signature}`;
+}
+
+function verifyAuthToken(token) {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+
+  const [headerPart, payloadPart, signaturePart] = parts;
+  const signingInput = `${headerPart}.${payloadPart}`;
+  const expectedSignature = crypto
+    .createHmac("sha256", getAuthTokenSecret())
+    .update(signingInput)
+    .digest();
+  let suppliedSignature;
+  let header;
+  let payload;
+
+  try {
+    suppliedSignature = Buffer.from(signaturePart, "base64url");
+    header = JSON.parse(Buffer.from(headerPart, "base64url").toString("utf8"));
+    payload = JSON.parse(Buffer.from(payloadPart, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+
+  if (
+    header.alg !== "HS256" ||
+    suppliedSignature.length !== expectedSignature.length ||
+    !crypto.timingSafeEqual(suppliedSignature, expectedSignature) ||
+    !Number.isInteger(payload.sub) ||
+    payload.sub <= 0 ||
+    !["customer", "provider"].includes(payload.account_type) ||
+    !Number.isInteger(payload.exp) ||
+    payload.exp <= Math.floor(Date.now() / 1000)
+  ) {
+    return null;
+  }
+
+  return { id: payload.sub, account_type: payload.account_type };
+}
+
+function authenticateToken(req, res, next) {
+  const authorization = req.get("authorization");
+  const match = typeof authorization === "string"
+    ? authorization.match(/^Bearer ([^\s]+)$/i)
+    : null;
+
+  if (!match) {
+    return res.status(401).json({ message: "Authentication is required." });
+  }
+
+  try {
+    const user = verifyAuthToken(match[1]);
+    if (!user) {
+      return res.status(401).json({ message: "Your session is invalid or expired." });
+    }
+    req.authUser = user;
+    return next();
+  } catch (error) {
+    return res.status(503).json({ message: error.message });
+  }
+}
+
+function requireRole(role) {
+  return (req, res, next) => {
+    if (req.authUser.account_type !== role) {
+      return res.status(403).json({ message: "You do not have access to this resource." });
+    }
+    return next();
+  };
+}
+
 function formatMysqlConnectionError(error) {
   let message = error.message;
   const credentials = [
@@ -63,12 +164,15 @@ function formatMysqlConnectionError(error) {
 
 const testConnectionOnly = process.argv.includes("--test-db");
 
-if (testConnectionOnly && mysqlSslSetting !== "true") {
-  console.error("MySQL connection test requires MYSQL_SSL=true.");
-  db.end(() => {
-    process.exitCode = 1;
-  });
-} else {
+function startServer() {
+  if (testConnectionOnly && mysqlSslSetting !== "true") {
+    console.error("MySQL connection test requires MYSQL_SSL=true.");
+    db.end(() => {
+      process.exitCode = 1;
+    });
+    return;
+  }
+
   db.getConnection((err, connection) => {
     if (err) {
       console.error(
@@ -106,12 +210,16 @@ if (testConnectionOnly && mysqlSslSetting !== "true") {
   });
 }
 
+if (require.main === module) {
+  startServer();
+}
+
 app.get("/", (req, res) => {
   res.json({ message: "Fix Now backend is running!" });
 });
 
 // Search providers by service, optional location, availability and GPS radius.
-app.get("/providers/search", (req, res) => {
+app.get("/providers/search", authenticateToken, requireRole("customer"), (req, res) => {
   const { service, location, lat, lon, radiusKm, availableOnly } = req.query;
 
   if (typeof service !== "string" || !service.trim()) {
@@ -211,9 +319,8 @@ app.get("/providers/search", (req, res) => {
 });
 
 // Register or update a provider profile.
-app.post("/providers", (req, res) => {
+app.post("/providers", authenticateToken, requireRole("provider"), (req, res) => {
   const {
-    user_id,
     name,
     phone,
     service_type,
@@ -223,13 +330,11 @@ app.post("/providers", (req, res) => {
     is_available,
   } = req.body;
 
-  const userId = Number(user_id);
+  const userId = req.authUser.id;
   const hasLat = latitude !== undefined && latitude !== null && latitude !== "";
   const hasLon = longitude !== undefined && longitude !== null && longitude !== "";
 
   if (
-    !Number.isInteger(userId) ||
-    userId <= 0 ||
     typeof name !== "string" ||
     !name.trim() ||
     typeof phone !== "string" ||
@@ -338,12 +443,20 @@ app.post("/providers", (req, res) => {
 });
 
 // Load provider profile.
-app.get("/providers/by-user/:userId", (req, res) => {
+app.get(
+  "/providers/by-user/:userId",
+  authenticateToken,
+  requireRole("provider"),
+  (req, res) => {
+  if (Number(req.params.userId) !== req.authUser.id) {
+    return res.status(403).json({ message: "You cannot access another provider profile." });
+  }
+
   db.query(
     `SELECT id, user_id, name, phone, service_type, location,
             latitude, longitude, is_available
      FROM providers WHERE user_id = ? LIMIT 1`,
-    [req.params.userId],
+    [req.authUser.id],
     (err, rows) => {
       if (err) {
         console.error("Provider profile lookup failed:", err.message);
@@ -358,16 +471,18 @@ app.get("/providers/by-user/:userId", (req, res) => {
 });
 
 // Change provider availability. Only the linked account can update its profile.
-app.patch("/providers/:id/availability", (req, res) => {
+app.patch(
+  "/providers/:id/availability",
+  authenticateToken,
+  requireRole("provider"),
+  (req, res) => {
   const providerId = Number(req.params.id);
-  const userId = Number(req.body.user_id);
+  const userId = req.authUser.id;
   const available = req.body.is_available;
 
   if (
     !Number.isInteger(providerId) ||
     providerId <= 0 ||
-    !Number.isInteger(userId) ||
-    userId <= 0 ||
     typeof available !== "boolean"
   ) {
     return res.status(400).json({
@@ -419,7 +534,16 @@ app.patch("/providers/:id/availability", (req, res) => {
 app.post("/register", async (req, res) => {
   const { name, email, phone, password, account_type } = req.body;
 
-  if (!name || !email || !phone || !password) {
+  if (
+    typeof name !== "string" ||
+    !name.trim() ||
+    typeof email !== "string" ||
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) ||
+    typeof phone !== "string" ||
+    !phone.trim() ||
+    typeof password !== "string" ||
+    !password
+  ) {
     return res.status(400).json({
       message: "Please fill in all required fields.",
     });
@@ -431,14 +555,20 @@ app.post("/register", async (req, res) => {
     return res.status(400).json({ message: "Invalid account type." });
   }
 
-  if (String(password).length < 8) {
+  if (password.length < 8) {
     return res.status(400).json({
       message: "Password must be at least 8 characters.",
     });
   }
 
   try {
-    const hashedPassword = await bcrypt.hash(String(password), 10);
+    getAuthTokenSecret();
+  } catch (error) {
+    return res.status(503).json({ message: error.message });
+  }
+
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10);
 
     db.query(
       `INSERT INTO users (name, email, phone, password, account_type)
@@ -461,15 +591,17 @@ app.post("/register", async (req, res) => {
           return res.status(500).json({ message: "Unable to create account." });
         }
 
+        const user = {
+          id: result.insertId,
+          name: name.trim(),
+          email: email.trim().toLowerCase(),
+          phone: phone.trim(),
+          account_type: type,
+        };
         res.status(201).json({
           message: "Account created successfully!",
-          user: {
-            id: result.insertId,
-            name: String(name).trim(),
-            email: String(email).trim().toLowerCase(),
-            phone: String(phone).trim(),
-            account_type: type,
-          },
+          user,
+          token: createAuthToken(user),
         });
       }
     );
@@ -483,10 +615,21 @@ app.post("/register", async (req, res) => {
 app.post("/login", (req, res) => {
   const { email, password } = req.body;
 
-  if (!email || !password) {
+  if (
+    typeof email !== "string" ||
+    !email.trim() ||
+    typeof password !== "string" ||
+    !password
+  ) {
     return res.status(400).json({
       message: "Email and password are required.",
     });
+  }
+
+  try {
+    getAuthTokenSecret();
+  } catch (error) {
+    return res.status(503).json({ message: error.message });
   }
 
   db.query(
@@ -508,7 +651,7 @@ app.post("/login", (req, res) => {
       try {
         const user = results[0];
         const validPassword = await bcrypt.compare(
-          String(password),
+          password,
           user.password
         );
 
@@ -518,15 +661,17 @@ app.post("/login", (req, res) => {
           });
         }
 
+        const publicUser = {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          phone: user.phone,
+          account_type: user.account_type,
+        };
         res.json({
           message: "Login successful!",
-          user: {
-            id: user.id,
-            name: user.name,
-            email: user.email,
-            phone: user.phone,
-            account_type: user.account_type,
-          },
+          user: publicUser,
+          token: createAuthToken(publicUser),
         });
       } catch (compareError) {
         console.error("Password verification failed:", compareError.message);
@@ -536,15 +681,31 @@ app.post("/login", (req, res) => {
   );
 });
 
+app.get("/auth/me", authenticateToken, (req, res) => {
+  db.query(
+    `SELECT id, name, email, phone, account_type
+     FROM users WHERE id = ? LIMIT 1`,
+    [req.authUser.id],
+    (err, rows) => {
+      if (err) {
+        console.error("Session validation failed:", err.message);
+        return res.status(500).json({ message: "Unable to validate your session." });
+      }
+      if (!rows.length) {
+        return res.status(401).json({ message: "Your account no longer exists." });
+      }
+      return res.json({ user: rows[0] });
+    }
+  );
+});
+
 // Create a booking.
-app.post("/bookings", (req, res) => {
+app.post("/bookings", authenticateToken, requireRole("customer"), (req, res) => {
   const { customer_id, provider_id, problem } = req.body;
-  const customerId = Number(customer_id);
+  const customerId = req.authUser.id;
   const providerId = Number(provider_id);
 
   if (
-    !Number.isInteger(customerId) ||
-    customerId <= 0 ||
     !Number.isInteger(providerId) ||
     providerId <= 0
   ) {
@@ -587,7 +748,15 @@ app.post("/bookings", (req, res) => {
 });
 
 // Customer booking history.
-app.get("/bookings/customer/:id", (req, res) => {
+app.get(
+  "/bookings/customer/:id",
+  authenticateToken,
+  requireRole("customer"),
+  (req, res) => {
+  if (Number(req.params.id) !== req.authUser.id) {
+    return res.status(403).json({ message: "You cannot access another customer's bookings." });
+  }
+
   db.query(
     `SELECT b.id, b.customer_id, b.provider_id, b.problem,
             b.status, b.created_at,
@@ -597,7 +766,7 @@ app.get("/bookings/customer/:id", (req, res) => {
      JOIN providers p ON b.provider_id = p.id
      WHERE b.customer_id = ?
      ORDER BY b.created_at DESC`,
-    [req.params.id],
+    [req.authUser.id],
     (err, results) => {
       if (err) {
         console.error("Customer bookings failed:", err.message);
@@ -611,7 +780,15 @@ app.get("/bookings/customer/:id", (req, res) => {
 });
 
 // Provider booking list uses the provider's login user ID.
-app.get("/bookings/provider/:id", (req, res) => {
+app.get(
+  "/bookings/provider/:id",
+  authenticateToken,
+  requireRole("provider"),
+  (req, res) => {
+  if (Number(req.params.id) !== req.authUser.id) {
+    return res.status(403).json({ message: "You cannot access another provider's bookings." });
+  }
+
   db.query(
     `SELECT b.id, b.customer_id, b.provider_id, b.problem,
             b.status, b.created_at,
@@ -621,7 +798,7 @@ app.get("/bookings/provider/:id", (req, res) => {
      JOIN providers p ON b.provider_id = p.id
      WHERE p.user_id = ?
      ORDER BY b.created_at DESC`,
-    [req.params.id],
+    [req.authUser.id],
     (err, results) => {
       if (err) {
         console.error("Provider bookings failed:", err.message);
@@ -635,7 +812,11 @@ app.get("/bookings/provider/:id", (req, res) => {
 });
 
 // Update booking status using provider profile ID.
-app.patch("/bookings/:id/status", (req, res) => {
+app.patch(
+  "/bookings/:id/status",
+  authenticateToken,
+  requireRole("provider"),
+  (req, res) => {
   const { status, provider_id } = req.body;
   const providerId = Number(provider_id);
   const bookingId = Number(req.params.id);
@@ -659,11 +840,12 @@ app.patch("/bookings/:id/status", (req, res) => {
      SET b.status = ?
      WHERE b.id = ?
        AND p.id = ?
+       AND p.user_id = ?
        AND (
          (? = 'Completed' AND b.status = 'Accepted')
          OR (? IN ('Accepted', 'Rejected') AND b.status = 'Pending')
        )`,
-    [status, bookingId, providerId, status, status],
+    [status, bookingId, providerId, req.authUser.id, status, status],
     (err, result) => {
       if (err) {
         console.error("Booking status update failed:", err.message);
@@ -685,3 +867,5 @@ app.patch("/bookings/:id/status", (req, res) => {
     }
   );
 });
+
+module.exports = { app, db, startServer };
